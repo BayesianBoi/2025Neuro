@@ -13,7 +13,7 @@ Analysis of the relationship between Perceptual Awareness Scale (PAS) ratings an
 
 Both accuracy and RT varied significantly with PAS ratings (p < .001):
 
-![Behavioral Results](out/behaviour_analysis/fig_accuracy_rt_combined.png)
+![Behavioural Results](out/fig_accuracy_rt_combined.png)
 
 | PAS Level | Accuracy | RT (ms) |
 |-----------|----------|---------|
