@@ -1,0 +1,543 @@
+---
+title: "Behavioral Analysis: PAS Ratings"
+author: "Niels"
+date: "6/11-25"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, 
+                      fig.align = "center", fig.width = 8, fig.height = 5)
+```
+
+# Overview
+
+Analysis of the relationship between PAS ratings and behavioral measures (accuracy and response time) using mixed-effects models.
+
+---
+
+# Setup
+
+## First-time setup (uncomment to run)
+```{r venv-setup, eval=FALSE}
+# Run once to set up the environment
+# install.packages("renv")
+# Sys.setenv(RENV_PATHS_CACHE = "/work/NielsVærbak#8480/Behavioural Analysis/")
+# renv::init()
+# 
+# install.packages("pacman")
+# pacman::p_load(lme4, emmeans, tidyverse, scales, 
+#                gt, gtExtras, patchwork, webshot2)
+
+#renv::snapshot()
+```
+
+## Load packages
+```{r packages}
+# Activate renv if available
+if (file.exists("renv/activate.R")) source("renv/activate.R")
+
+# Load libraries
+library(lme4)
+library(emmeans)
+library(tidyverse)
+library(scales)
+library(gt)
+library(gtExtras)
+library(patchwork)
+
+# Create output folder
+dir.create("out/behaviour_analysis", showWarnings = FALSE, recursive = TRUE)
+
+# Clean workspace
+rm(list = ls())
+```
+
+---
+
+# Load Data
+```{r load-data}
+datapath <- "/work/workshop_data/behavioural_logs/"
+
+# Read all CSV files
+file_list <- list.files(datapath, pattern = "\\.csv$", full.names = TRUE)
+df_raw <- map_dfr(file_list, read_csv, show_col_types = FALSE)
+
+# Prepare variables
+df <- df_raw %>%
+  mutate(
+    correct = as.integer(objective_response == target_type),
+    subjective_response = as.numeric(subjective_response),
+    subject = factor(subject),
+    logRT = log(objective_response_time_ms),
+    # Create PAS factor with proper labels
+    PAS = {
+      u <- sort(unique(subjective_response))
+      base_labs <- c("NE", "WG", "ACE", "CE")
+      labs <- base_labs[seq_along(u)]
+      factor(subjective_response, levels = u, labels = labs, ordered = TRUE)
+    }
+  )
+
+# Basic info
+pas_levels <- levels(df$PAS)
+n_subjects <- n_distinct(df$subject)
+n_trials <- nrow(df)
+
+cat("Dataset:", n_subjects, "subjects,", format(n_trials, big.mark = ","), "trials\n")
+cat("PAS levels:", paste(pas_levels, collapse = ", "), "\n")
+```
+
+---
+
+# PAS Distribution
+
+First look at how subjects used the PAS scale.
+```{r pas-distribution}
+# Overall counts
+pas_counts <- df %>%
+  count(PAS) %>%
+  mutate(
+    percentage = n / sum(n) * 100,
+    label = sprintf("%s\n(%.1f%%)", comma(n), percentage)
+  )
+
+print(pas_counts)
+
+# Per-subject breakdown
+pas_by_subject <- df %>%
+  count(subject, PAS) %>%
+  group_by(subject) %>%
+  mutate(percentage = n / sum(n) * 100) %>%
+  ungroup()
+```
+```{r pas-plots, fig.width=10, fig.height=5}
+# Overall distribution
+p_pas_overall <- ggplot(pas_counts, aes(x = PAS, y = n, fill = PAS)) +
+  geom_col(alpha = 0.8, width = 0.7) +
+  geom_text(aes(label = label), vjust = -0.5, size = 4, fontface = "bold") +
+  scale_fill_manual(values = c("#e74c3c", "#f39c12", "#3498db", "#2ecc71")) +
+  scale_y_continuous("Number of Trials", labels = comma_format(),
+                     expand = expansion(mult = c(0, 0.15))) +
+  labs(x = "PAS Level", title = "Overall PAS Distribution") +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#ecf0f1", linewidth = 0.5),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5, margin = margin(b = 15)),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 11, face = "bold")
+  )
+
+# By subject
+p_pas_subject <- ggplot(pas_by_subject, aes(x = PAS, y = percentage, 
+                                             group = subject, color = subject)) +
+  geom_line(alpha = 0.6, linewidth = 0.8) +
+  geom_point(alpha = 0.6, size = 2) +
+  scale_color_viridis_d(option = "turbo", alpha = 0.8) +
+  scale_y_continuous("Percentage of Trials (%)", limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.1))) +
+  labs(x = "PAS Level", title = "By Subject") +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#ecf0f1", linewidth = 0.5),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5, margin = margin(b = 5)),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 11, face = "bold")
+  )
+
+p_pas_combined <- p_pas_overall + p_pas_subject
+print(p_pas_combined)
+
+ggsave("out/behaviour_analysis/fig_pas_distribution_4levels.png", p_pas_combined,
+       width = 12, height = 5, dpi = 300)
+```
+
+---
+
+# Collapse PAS to 3 Levels
+
+Collapsing ACE and CE into a single category
+```{r collapse-pas}
+df <- df %>%
+  mutate(
+    PAS = fct_collapse(PAS,
+      "NE" = "NE",
+      "WG" = "WG", 
+      "CE" = c("ACE", "CE")
+    ),
+    PAS = factor(PAS, levels = c("NE", "WG", "CE"), ordered = TRUE)
+  )
+
+pas_levels <- levels(df$PAS)
+cat("New PAS levels:", paste(pas_levels, collapse = ", "), "\n")
+
+# Updated distribution
+pas_counts_collapsed <- df %>%
+  count(PAS) %>%
+  mutate(
+    percentage = n / sum(n) * 100,
+    label = sprintf("%s\n(%.1f%%)", comma(n), percentage)
+  )
+
+print(pas_counts_collapsed)
+
+pas_by_subject_collapsed <- df %>%
+  count(subject, PAS) %>%
+  group_by(subject) %>%
+  mutate(percentage = n / sum(n) * 100) %>%
+  ungroup()
+```
+
+```{r collapsed-plots, fig.width=10, fig.height=5}
+p_pas_overall_3 <- ggplot(pas_counts_collapsed, aes(x = PAS, y = n, fill = PAS)) +
+  geom_col(alpha = 0.8, width = 0.7) +
+  geom_text(aes(label = label), vjust = -0.5, size = 4, fontface = "bold") +
+  scale_fill_manual(values = c("#e74c3c", "#f39c12", "#2ecc71")) +
+  scale_y_continuous("Number of Trials", labels = comma_format(),
+                     expand = expansion(mult = c(0, 0.15))) +
+  labs(x = "PAS Level", title = "Collapsed (3 Levels)") +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#ecf0f1", linewidth = 0.5),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5, margin = margin(b = 15)),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 11, face = "bold")
+  )
+
+p_pas_subject_3 <- ggplot(pas_by_subject_collapsed, aes(x = PAS, y = percentage,
+                                                         group = subject, color = subject)) +
+  geom_line(alpha = 0.6, linewidth = 0.8) +
+  geom_point(alpha = 0.6, size = 2) +
+  scale_color_viridis_d(option = "turbo", alpha = 0.8) +
+  scale_y_continuous("Percentage of Trials (%)", limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.1))) +
+  labs(x = "PAS Level", title = "By Subject") +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#ecf0f1", linewidth = 0.5),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5, margin = margin(b = 5)),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 11, face = "bold")
+  )
+
+p_pas_combined_3 <- p_pas_overall_3 + p_pas_subject_3
+print(p_pas_combined_3)
+
+ggsave("out/behaviour_analysis/fig_pas_distribution_3levels.png", p_pas_combined_3,
+       width = 12, height = 5, dpi = 300)
+```
+
+---
+
+# Accuracy Analysis
+
+Does accuracy vary with PAS? Testing with a binomial GLMM.
+```{r accuracy-models}
+# Fit models
+m_acc <- glmer(correct ~ PAS + (1 | subject),
+               data = df, family = binomial(link = "logit"),
+               control = glmerControl(optimizer = "bobyqa"))
+
+m_acc0 <- glmer(correct ~ 1 + (1 | subject),
+                data = df, family = binomial(link = "logit"),
+                control = glmerControl(optimizer = "bobyqa"))
+
+# Compare to null
+lrt_acc <- anova(m_acc0, m_acc, test = "Chisq")
+print(lrt_acc)
+
+lrt_row_acc <- as.data.frame(lrt_acc)[2, , drop = FALSE]
+lrt_text_acc <- sprintf("χ²(%d) = %.1f, p %s",
+                        lrt_row_acc$Df[1], lrt_row_acc$Chisq[1],
+                        ifelse(lrt_row_acc$`Pr(>Chisq)`[1] < .001, "< .001",
+                               sprintf("= %.3f", lrt_row_acc$`Pr(>Chisq)`[1])))
+```
+
+```{r accuracy-emmeans}
+# Estimated marginal means
+em_acc_resp <- emmeans(m_acc, ~ PAS, type = "response")
+print(summary(em_acc_resp))
+
+acc_tbl <- as.data.frame(em_acc_resp) %>%
+  mutate(
+    PAS = factor(as.character(PAS), levels = pas_levels, ordered = TRUE),
+    prob_pct = percent(prob, accuracy = 0.1),
+    ci = sprintf("[%s, %s]", percent(asymp.LCL, accuracy = 0.1),
+                 percent(asymp.UCL, accuracy = 0.1)),
+    PAS_chr = as.character(PAS)
+  )
+```
+```{r accuracy-contrasts}
+# Pairwise comparisons
+consec_acc <- contrast(emmeans(m_acc, ~ PAS), "consec")
+consec_acc_sum <- summary(consec_acc, infer = c(TRUE, TRUE), adjust = "bonferroni")
+print(consec_acc_sum)
+
+acc_con_df <- as.data.frame(consec_acc_sum)
+
+# Ensure CIs are present
+if (!all(c("lower.CL", "upper.CL") %in% names(acc_con_df))) {
+  K <- nrow(acc_con_df)
+  alpha <- 0.05 / max(K, 1)
+  zcrit <- qnorm(1 - alpha / 2)
+  acc_con_df$lower.CL <- acc_con_df$estimate - zcrit * acc_con_df$SE
+  acc_con_df$upper.CL <- acc_con_df$estimate + zcrit * acc_con_df$SE
+}
+
+acc_con_tbl <- acc_con_df %>%
+  transmute(
+    contrast, estimate, SE,
+    z = if ("z.ratio" %in% names(acc_con_df)) z.ratio else estimate / SE,
+    p = p.value, p_bonf = p.value,
+    OR = exp(estimate), OR_low = exp(lower.CL), OR_high = exp(upper.CL)
+  )
+```
+```{r accuracy-plot, fig.width=6, fig.height=5}
+p_acc <- ggplot(acc_tbl, aes(x = PAS, y = prob)) +
+  geom_line(aes(group = 1), color = "#2c3e50", linewidth = 1) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), 
+                width = 0.15, linewidth = 0.8, color = "#546e7a") +
+  geom_point(size = 4, color = "#2c3e50", fill = "#7f8c8d", shape = 21, stroke = 1.5) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", 
+             linewidth = 0.5, color = "#7f8c8d", alpha = 0.7) +
+  annotate("text", x = 3.3, y = 0.525, label = "Chance level", 
+           color = "#7f8c8d", size = 3, hjust = 0, fontface = "italic") +
+  geom_text(aes(label = prob_pct), vjust = -1.5, size = 3.5, 
+            color = "#2c3e50", fontface = "bold") +
+  coord_cartesian(clip = "off") +
+  scale_y_continuous("Accuracy", labels = percent_format(accuracy = 1),
+                     limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                     expand = expansion(mult = c(0.02, 0.12))) +
+  scale_x_discrete("Perceptual Awareness Scale (PAS)") +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#ecf0f1", linewidth = 0.5),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    axis.line = element_line(color = "#2c3e50", linewidth = 0.5),
+    axis.ticks = element_line(color = "#2c3e50", linewidth = 0.5),
+    axis.text = element_text(color = "#2c3e50", size = 11),
+    axis.title.x = element_text(margin = margin(t = 12), face = "bold", size = 11),
+    axis.title.y = element_text(margin = margin(r = 12), face = "bold", size = 11),
+    plot.title = element_text(face = "bold", size = 13, hjust = 0, 
+                              margin = margin(b = 15), color = "#2c3e50"),
+    plot.margin = margin(20, 50, 15, 15)
+  ) +
+  ggtitle("Accuracy by Perceptual Awareness")
+
+print(p_acc)
+```
+
+---
+
+# Response Time Analysis
+
+Does RT vary with PAS? Testing with LMM on log(RT).
+```{r rt-models}
+df_rt <- df %>% filter(is.finite(logRT))
+
+# Fit models (ML for LRT)
+m_rt <- lmer(logRT ~ PAS + (1 | subject), data = df_rt, REML = FALSE)
+m_rt0 <- lmer(logRT ~ 1 + (1 | subject), data = df_rt, REML = FALSE)
+
+# Compare to null
+lrt_rt <- anova(m_rt0, m_rt, test = "Chisq")
+print(lrt_rt)
+
+lrt_row_rt <- as.data.frame(lrt_rt)[2, , drop = FALSE]
+lrt_text_rt <- sprintf("χ²(%d) = %.1f, p %s",
+                       lrt_row_rt$Df[1], lrt_row_rt$Chisq[1],
+                       ifelse(lrt_row_rt$`Pr(>Chisq)`[1] < .001, "< .001",
+                              sprintf("= %.3f", lrt_row_rt$`Pr(>Chisq)`[1])))
+```
+
+```{r rt-emmeans}
+# Estimated marginal means
+em_rt <- emmeans(m_rt, ~ PAS)
+print(summary(em_rt))
+
+rt_tbl <- as.data.frame(em_rt) %>%
+  mutate(
+    PAS = factor(as.character(PAS), levels = pas_levels, ordered = TRUE),
+    ms = exp(emmean),        # Back-transform to ms
+    ms_low = exp(asymp.LCL),
+    ms_high = exp(asymp.UCL)
+  )
+```
+
+```{r rt-contrasts}
+# Pairwise comparisons
+consec_rt <- contrast(emmeans(m_rt, ~ PAS), "consec")
+consec_rt_sum <- summary(consec_rt, infer = c(TRUE, TRUE), adjust = "bonferroni")
+print(consec_rt_sum)
+
+rt_con_df <- as.data.frame(consec_rt_sum)
+
+# Ensure CIs are present
+if (!all(c("lower.CL", "upper.CL") %in% names(rt_con_df))) {
+  K <- nrow(rt_con_df)
+  alpha <- 0.05 / max(K, 1)
+  zcrit <- qnorm(1 - alpha / 2)
+  rt_con_df$lower.CL <- rt_con_df$estimate - zcrit * rt_con_df$SE
+  rt_con_df$upper.CL <- rt_con_df$estimate + zcrit * rt_con_df$SE
+}
+
+rt_con_tbl <- rt_con_df %>%
+  transmute(
+    contrast, estimate, SE,
+    z = if ("t.ratio" %in% names(rt_con_df)) t.ratio else estimate / SE,
+    p = p.value, p_bonf = p.value
+  )
+```
+```{r rt-plot, fig.width=6, fig.height=5}
+# Convert to ms for plotting
+rt_tbl_display <- rt_tbl %>%
+  mutate(ms = ms * 1000, ms_low = ms_low * 1000, ms_high = ms_high * 1000)
+
+p_rt <- ggplot(rt_tbl_display, aes(x = PAS, y = ms)) +
+  geom_line(aes(group = 1), color = "#34495e", linewidth = 1.2) +
+  geom_errorbar(aes(ymin = ms_low, ymax = ms_high), 
+                width = 0.25, linewidth = 0.9, color = "#34495e", alpha = 0.6) +
+  geom_point(size = 6, color = "#34495e", fill = "#5dade2", shape = 21, stroke = 2) +
+  geom_text(aes(label = sprintf("%.0f ms", ms)), hjust = -0.4, size = 4.5, 
+            color = "#2c3e50", fontface = "bold") +
+  coord_cartesian(clip = "off") +
+  scale_y_continuous("Response Time (ms)", labels = comma_format(),
+                     breaks = seq(500, 2000, 250)) +
+  scale_x_discrete("Perceptual Awareness Scale (PAS)") +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#ecf0f1", linewidth = 0.5),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    axis.line = element_line(color = "#2c3e50", linewidth = 0.6),
+    axis.ticks = element_line(color = "#2c3e50", linewidth = 0.5),
+    axis.text = element_text(color = "#2c3e50", size = 12, face = "bold"),
+    axis.title = element_text(face = "bold", size = 13),
+    axis.title.x = element_text(margin = margin(t = 15)),
+    axis.title.y = element_text(margin = margin(r = 15)),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0, margin = margin(b = 20)),
+    plot.margin = margin(20, 45, 20, 20)
+  ) +
+  ggtitle("Response Time by Perceptual Awareness")
+
+print(p_rt)
+```
+
+---
+
+# Combined Results
+```{r combined-plots, fig.width=10, fig.height=4.5}
+p_combined <- p_acc + p_rt +
+  plot_annotation(
+    caption = "Error bars: 95% CIs. Left: Binomial GLMM. Right: LMM on log(RT).",
+    theme = theme(plot.caption = element_text(hjust = 0.5, size = 9, color = "gray40"))
+  )
+
+print(p_combined)
+
+# Save plot
+ggsave("out/behaviour_analysis/fig_accuracy_rt_combined.png", p_combined, 
+       width = 10, height = 4.5, dpi = 300)
+```
+
+## Summary Table
+```{r summary-table}
+# Median trials per PAS level
+n_by_pas_med <- df %>%
+  count(subject, PAS) %>%
+  group_by(PAS) %>%
+  summarize(median_n = median(n), .groups = "drop") %>%
+  mutate(PAS_chr = as.character(PAS))
+
+# Build combined table
+em_acc_df <- as.data.frame(em_acc_resp) %>%
+  mutate(PAS = factor(as.character(PAS), levels = pas_levels, ordered = TRUE),
+         PAS_chr = as.character(PAS))
+
+acc_table_df <- em_acc_df %>%
+  left_join(acc_tbl %>% select(PAS_chr, prob_pct, ci), by = "PAS_chr") %>%
+  left_join(n_by_pas_med %>% select(PAS_chr, median_n), by = "PAS_chr") %>%
+  mutate(PAS = factor(PAS_chr, levels = pas_levels, ordered = TRUE)) %>%
+  transmute(
+    `PAS level` = PAS,
+    `Estimated accuracy` = prob_pct,
+    `95% CI` = ci,
+    `Median trials per subject` = median_n
+  )
+
+acc_rt_table_df <- acc_table_df %>%
+  left_join(
+    rt_tbl %>% transmute(
+      `PAS level` = factor(as.character(PAS), levels = pas_levels, ordered = TRUE),
+      `RT (ms)` = sprintf("%.0f", ms * 1000),
+      `RT 95% CI` = sprintf("[%.0f, %.0f]", ms_low * 1000, ms_high * 1000)
+    ),
+    by = "PAS level"
+  )
+
+acc_rt_table <- acc_rt_table_df %>%
+  gt() %>%
+  gt_theme_nytimes() %>%
+  tab_header(
+    title = md("**Behavioral Results by PAS Level**"),
+    subtitle = md(paste0("Accuracy: ", lrt_text_acc, " | RT: ", lrt_text_rt,
+                         " | N = ", n_subjects, " subjects"))
+  ) %>%
+  cols_align(align = "center",
+             columns = c(`Estimated accuracy`, `95% CI`, `RT (ms)`, `RT 95% CI`,
+                         `Median trials per subject`)) %>%
+  tab_source_note(md("Accuracy: Binomial GLMM. RT: LMM (back-transformed). Both with subject random intercepts."))
+
+print(acc_rt_table)
+gtsave(acc_rt_table, "out/behaviour_analysis/table_behavioral_results_combined.html")
+```
+
+---
+
+# Export 
+```{r export-summary}
+# Collect all results
+block_est_acc <- as.data.frame(em_acc_resp) %>%
+  transmute(section = "accuracy_emmeans_by_PAS", PAS = as.character(PAS),
+            estimate_prob = prob, lower = asymp.LCL, upper = asymp.UCL, se = SE)
+
+block_con_acc <- acc_con_tbl %>%
+  transmute(section = "accuracy_ordered_contrasts", name = contrast,
+            OR, OR_low, OR_high, z, p, p_bonf)
+
+block_lrt_acc <- tibble(section = "accuracy_lrt_vs_null", name = "PAS main effect",
+                        chi2 = lrt_row_acc$Chisq[1], df = lrt_row_acc$Df[1],
+                        p = lrt_row_acc$`Pr(>Chisq)`[1])
+
+block_est_rt <- rt_tbl %>%
+  transmute(section = "rt_emmeans_by_PAS", PAS = as.character(PAS),
+            ms, ms_low, ms_high, se = SE)
+
+block_con_rt <- rt_con_tbl %>%
+  transmute(section = "rt_ordered_contrasts", name = contrast, z, p, p_bonf)
+
+block_lrt_rt <- tibble(section = "rt_lrt_vs_null", name = "PAS main effect",
+                       chi2 = lrt_row_rt$Chisq[1], df = lrt_row_rt$Df[1],
+                       p = lrt_row_rt$`Pr(>Chisq)`[1])
+
+summary_csv <- bind_rows(block_est_acc, block_con_acc, block_lrt_acc,
+                         block_est_rt, block_con_rt, block_lrt_rt)
+
+write_csv(summary_csv, "out/behaviour_analysis/behavior_summary_results.csv")
+cat("Summary CSV saved to out/behaviour_analysis/behavior_summary_results.csv\n")
+```
