@@ -164,6 +164,14 @@ jupyter notebook nbs/multi_participant_analysis-studygroup2.ipynb
 
 See `requirements.txt` for complete Python dependencies.
 
+## Data Availability
+Raw MEG data and individual participant information are not publicly available due to privacy restrictions and institutional data protection policies. Processed group-level results and analysis code are available in this repository.
+
+## Course Information
+Advanced Cognitive Neuroscience
+MSc Cognitive Science, Aarhus University
+Instructor: Lau Møller Andersen
+
 ## Authors and Contributions
 
 **Study Group 2 - Advanced Cognitive Neuroscience 2025**
